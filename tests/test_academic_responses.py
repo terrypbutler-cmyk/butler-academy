@@ -408,7 +408,7 @@ class AcademicResponseCalibrationTests(unittest.TestCase):
             neutral_score,
         )
 
-    def test_whole_class_calibration_guarantees_diagnosable_errors(self):
+    def test_natural_calibration_does_not_force_errors_for_variety(self):
         pupils = pd.DataFrame(
             [
                 {
@@ -421,22 +421,155 @@ class AcademicResponseCalibrationTests(unittest.TestCase):
             ]
         )
 
-        plans = academic_responses.build_response_calibration(
-            "Expand and simplify 3(x + 4) - 2x.",
-            pupils,
-            "Maths",
-        )
-        substantive_errors = [
-            plan
-            for plan in plans
-            if plan["outcome"] in {"misconception", "slip"}
-        ]
+        with patch.object(
+            academic_responses,
+            "_response_outcome",
+            return_value="secure",
+        ):
+            plans = academic_responses.build_response_calibration(
+                "What is the HCF of 48 and 72?",
+                pupils,
+                "Maths",
+            )
 
         self.assertEqual(len(plans), len(pupils))
-        self.assertGreaterEqual(
-            len(substantive_errors),
-            (len(pupils) + 3) // 4,
+        self.assertEqual(
+            {plan["outcome"] for plan in plans},
+            {"secure"},
         )
+
+    def test_whiteboard_validation_rejects_all_idk_batch(self):
+        plans = [
+            {"name": f"Pupil {index}", "outcome": "secure"}
+            for index in range(10)
+        ]
+        answers = {plan["name"]: "I don't know" for plan in plans}
+
+        valid, message = academic_responses.validate_calibrated_answer_batch(
+            answers,
+            plans,
+        )
+
+        self.assertFalse(valid)
+        self.assertIn("10 minimal/non-attempt", message)
+
+    def test_whiteboard_validation_allows_calibrated_non_attempt(self):
+        plans = [
+            {"name": "Alex", "outcome": "secure"},
+            {"name": "Sam", "outcome": "no_attempt"},
+            {"name": "Jo", "outcome": "partial"},
+        ]
+        answers = {"Alex": "24", "Sam": "Not sure", "Jo": "12"}
+
+        valid, message = academic_responses.validate_calibrated_answer_batch(
+            answers,
+            plans,
+        )
+
+        self.assertTrue(valid)
+        self.assertEqual(message, "")
+
+    def test_whole_class_answers_are_generated_in_small_batches(self):
+        pupils = pd.DataFrame(
+            [
+                {
+                    "Full Name": f"Pupil {index}",
+                    "Maths Predicted Grade": "5",
+                    "Academic Confidence": 60,
+                    "Participation Level": 60,
+                    "Independence": 60,
+                    "Processing Speed": 60,
+                }
+                for index in range(25)
+            ]
+        )
+        chunks = [
+            pupils.iloc[start : start + 12]["Full Name"].tolist()
+            for start in range(0, len(pupils), 12)
+        ]
+
+        class FakeModel:
+            def __init__(self):
+                self.calls = 0
+
+            def generate_content(self, *_args, **_kwargs):
+                names = chunks[self.calls]
+                self.calls += 1
+                return types.SimpleNamespace(
+                    text=json.dumps({name: "24" for name in names})
+                )
+
+        fake_model = FakeModel()
+        academic_responses.st.session_state.clear()
+        with patch.object(
+            academic_responses.genai,
+            "GenerativeModel",
+            return_value=fake_model,
+        ):
+            answers = academic_responses.fetch_ai_answers(
+                "What is the HCF of 48 and 72?",
+                pupils,
+                "Write a short whiteboard answer.",
+                None,
+                "Year 7",
+                "Maths",
+                "Teacher",
+                is_written=True,
+                batch_size=12,
+            )
+
+        self.assertEqual(fake_model.calls, 3)
+        self.assertEqual(len(answers), 25)
+        self.assertTrue(all(answer == "24" for answer in answers.values()))
+
+    def test_uniform_idk_batch_is_retried_before_display(self):
+        pupils = pd.DataFrame(
+            [
+                {
+                    "Full Name": name,
+                    "Maths Predicted Grade": "8",
+                    "Academic Confidence": 80,
+                    "Participation Level": 80,
+                    "Independence": 80,
+                    "Processing Speed": 80,
+                }
+                for name in ("Alex", "Sam", "Jo")
+            ]
+        )
+        names = pupils["Full Name"].tolist()
+
+        class FakeModel:
+            def __init__(self):
+                self.calls = 0
+
+            def generate_content(self, *_args, **_kwargs):
+                self.calls += 1
+                answer = "I don't know" if self.calls == 1 else "24"
+                return types.SimpleNamespace(
+                    text=json.dumps({name: answer for name in names})
+                )
+
+        fake_model = FakeModel()
+        academic_responses.st.session_state.clear()
+        with patch.object(
+            academic_responses.genai,
+            "GenerativeModel",
+            return_value=fake_model,
+        ):
+            answers = academic_responses.fetch_ai_answers(
+                "What is the HCF of 48 and 72?",
+                pupils,
+                "Write a short whiteboard answer.",
+                None,
+                "Year 7",
+                "Maths",
+                "Teacher",
+                is_written=True,
+                validate_calibration=True,
+            )
+
+        self.assertEqual(fake_model.calls, 2)
+        self.assertEqual(set(answers.values()), {"24"})
 
     def test_low_readiness_class_can_include_an_authentic_idk_prediction(self):
         pupils = pd.DataFrame(

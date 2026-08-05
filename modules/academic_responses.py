@@ -42,6 +42,7 @@ _AFL_DISCUSSION_KEY = "afl_discussion"
 _AFL_STARTED_INTERACTIONS_KEY = "afl_started_interactions"
 _AFL_EXIT_ANSWERS_KEY = "afl_exit_answers"
 _AFL_PEER_FORMAT_VERSION = "long-conversations-v2"
+WHITEBOARD_BATCH_SIZE = 12
 
 
 def _ensure_afl_state():
@@ -582,39 +583,39 @@ def _response_outcome_weights(row, subject, settings=None):
     readiness = _student_response_readiness(row, settings)
     if score >= 75:
         weights = {
-            "secure": 0.46,
-            "partial": 0.24,
-            "misconception": 0.12,
-            "slip": 0.11,
-            "uncertain": 0.05,
-            "no_attempt": 0.02,
+            "secure": 0.65,
+            "partial": 0.18,
+            "misconception": 0.07,
+            "slip": 0.07,
+            "uncertain": 0.025,
+            "no_attempt": 0.005,
         }
     elif score >= 55:
         weights = {
-            "secure": 0.29,
-            "partial": 0.28,
-            "misconception": 0.22,
-            "slip": 0.12,
-            "uncertain": 0.06,
-            "no_attempt": 0.03,
+            "secure": 0.50,
+            "partial": 0.25,
+            "misconception": 0.10,
+            "slip": 0.09,
+            "uncertain": 0.05,
+            "no_attempt": 0.01,
         }
     elif score >= 35:
         weights = {
-            "secure": 0.16,
-            "partial": 0.27,
-            "misconception": 0.32,
-            "slip": 0.12,
-            "uncertain": 0.09,
-            "no_attempt": 0.04,
+            "secure": 0.32,
+            "partial": 0.30,
+            "misconception": 0.18,
+            "slip": 0.10,
+            "uncertain": 0.08,
+            "no_attempt": 0.02,
         }
     else:
         weights = {
-            "secure": 0.08,
-            "partial": 0.22,
-            "misconception": 0.38,
+            "secure": 0.18,
+            "partial": 0.30,
+            "misconception": 0.25,
             "slip": 0.12,
-            "uncertain": 0.12,
-            "no_attempt": 0.08,
+            "uncertain": 0.10,
+            "no_attempt": 0.05,
         }
 
     if readiness < 25:
@@ -698,63 +699,6 @@ def build_response_calibration(question, student_subset, subject, settings=None)
         )
         target["outcome"] = "no_attempt"
 
-    if len(plans) >= 4:
-        required_substantive_errors = max(1, (len(plans) + 3) // 4)
-        substantive_errors = [
-            plan
-            for plan in plans
-            if plan["outcome"] in {"misconception", "slip"}
-        ]
-        candidates = sorted(
-            (
-                plan
-                for plan in plans
-                if plan["outcome"]
-                not in {"misconception", "slip", "no_attempt"}
-            ),
-            key=lambda plan: (
-                plan["score"],
-                plan["response_readiness"],
-                plan["name"].casefold(),
-            ),
-        )
-        while len(substantive_errors) < required_substantive_errors and candidates:
-            plan = candidates.pop(0)
-            plan["outcome"] = (
-                "misconception"
-                if len(substantive_errors) % 3 != 2
-                else "slip"
-            )
-            substantive_errors.append(plan)
-
-    if len(plans) >= 8 and not any(
-        plan["outcome"] == "no_attempt" for plan in plans
-    ):
-        no_attempt_candidates = sorted(
-            (
-                plan
-                for plan in plans
-                if plan["response_readiness"] <= 45
-                and plan["outcome"] not in {"misconception", "slip"}
-            ),
-            key=lambda plan: (
-                plan["response_readiness"],
-                plan["score"],
-                plan["name"].casefold(),
-            ),
-        )
-        if no_attempt_candidates:
-            no_attempt_candidates[0]["outcome"] = "no_attempt"
-
-    if len(plans) >= 2 and all(
-        plan["outcome"] == "secure" for plan in plans
-    ):
-        lowest_security = min(
-            plans,
-            key=lambda plan: (plan["score"], plan["name"].casefold()),
-        )
-        lowest_security["outcome"] = "partial"
-
     for plan in plans:
         outcome_weight = plan.pop("_weights", {}).get(plan["outcome"], 0)
         plan["likelihood"] = (
@@ -791,6 +735,59 @@ def _format_response_calibration(plans, subject):
         ),
     )
     return "\n".join(lines), subject_guidance
+
+
+def _looks_like_non_attempt(answer):
+    """Identify minimal non-attempt variants without judging correctness."""
+    clean = re.sub(r"[^a-z0-9]+", " ", str(answer or "").casefold()).strip()
+    return clean in {
+        "",
+        "idk",
+        "i dont know",
+        "i don t know",
+        "dont know",
+        "don t know",
+        "do not know",
+        "not sure",
+        "im not sure",
+        "i m not sure",
+        "unsure",
+        "no idea",
+        "i have no idea",
+        "dunno",
+        "no attempt",
+    }
+
+
+def validate_calibrated_answer_batch(answers, response_plans):
+    """Reject incomplete or implausibly uniform non-attempt batches."""
+    if not isinstance(answers, dict):
+        return False, "The model did not return a JSON dictionary."
+
+    expected_names = [plan["name"] for plan in response_plans]
+    missing = [name for name in expected_names if name not in answers]
+    if missing:
+        return False, f"Missing {len(missing)} named pupil response(s)."
+
+    actual_non_attempts = sum(
+        _looks_like_non_attempt(answers.get(name))
+        for name in expected_names
+    )
+    planned_minimal = sum(
+        plan["outcome"] == "no_attempt"
+        for plan in response_plans
+    )
+    tolerance = 0 if len(expected_names) <= 2 else max(
+        1,
+        round(len(expected_names) * 0.10),
+    )
+    if actual_non_attempts > planned_minimal + tolerance:
+        return (
+            False,
+            f"Returned {actual_non_attempts} minimal/non-attempt answers but the "
+            f"profile calibration permits about {planned_minimal}.",
+        )
+    return True, ""
 
 
 _DOMINANT_DISCUSSION_TERMS = (
@@ -1049,14 +1046,42 @@ def fetch_ai_answers(
     teacher_name,
     is_written=False,
     discussion_history="",
+    batch_size=None,
+    validate_calibration=False,
 ):
+    if batch_size and len(student_subset) > batch_size:
+        combined_answers = {}
+        for start in range(0, len(student_subset), batch_size):
+            batch = student_subset.iloc[start : start + batch_size]
+            batch_answers = fetch_ai_answers(
+                question,
+                batch,
+                instructions,
+                uploaded_file,
+                cohort,
+                subject,
+                teacher_name,
+                is_written=is_written,
+                discussion_history=discussion_history,
+                validate_calibration=validate_calibration,
+            )
+            if not batch_answers:
+                return {}
+            combined_answers.update(batch_answers)
+        return combined_answers
+
     age_context = "11 to 12 years old" if cohort == "Year 7" else "14 to 15 years old"
     settings = reaction_settings_from_state(st.session_state)
     
     profiles = []
     for _, row in student_subset.iterrows():
         name = row.get("Full Name")
-        response_profile = get_ai_response_profile(row, cohort, subject)
+        response_profile = get_ai_response_profile(
+            row,
+            cohort,
+            subject,
+            max_chars=700 if validate_calibration else 1400,
+        )
         profiles.append(f"- {name}: {response_profile}")
         
     profiles_text = "\n".join(profiles)
@@ -1135,6 +1160,10 @@ def fetch_ai_answers(
       fully correct answer. Variation across the class is intentional.
     - For NO_ATTEMPT, return an age-authentic minimal response such as "I don't know"
       or "Not sure" (or "No attempt" for written work), without an explanation.
+    - ONLY pupils assigned NO_ATTEMPT may return "I don't know", "Not sure", a blank
+      response or "No attempt". UNCERTAIN pupils must still make a brief tentative
+      attempt. SECURE pupils must give the correct answer after privately solving the
+      exact question.
     - If you use LaTeX, you MUST double-escape the backslashes (e.g., `\\\\frac`, `\\\\sqrt`) so the JSON parser does not crash.
     """
     
@@ -1149,7 +1178,29 @@ def fetch_ai_answers(
             raw_text = response.text
             raw_text = raw_text.replace("`" * 3 + "json", "")
             raw_text = raw_text.replace("`" * 3, "")
-            return json.loads(raw_text.strip())
+            raw_answers = json.loads(raw_text.strip())
+            if validate_calibration:
+                valid, validation_message = validate_calibrated_answer_batch(
+                    raw_answers,
+                    response_plans,
+                )
+                if not valid:
+                    if attempt < 2:
+                        prompt += (
+                            "\n\nRETRY CORRECTION: The previous batch was rejected. "
+                            f"{validation_message} Regenerate every named response and "
+                            "follow each assigned response state exactly."
+                        )
+                        continue
+                    st.error(
+                        "The AI repeatedly returned an implausibly uniform set of "
+                        "whiteboard responses. Refresh and try again."
+                    )
+                    return {}
+            return {
+                plan["name"]: str(raw_answers.get(plan["name"], "")).strip()
+                for plan in response_plans
+            }
             
         except Exception as e:
             if "429" in str(e) and attempt < 2:
@@ -1847,8 +1898,25 @@ def render_academic_responses(df, cohort, subject="General"):
             if st.session_state.wb_answers is None:
                 if st.button("Show All Mini-Whiteboards", type="primary"):
                     with st.spinner("Students are scribbling on their boards..."):
-                        instructions = "Write ONLY the absolute minimum factual or mathematical answer the student would scribble on a whiteboard (1 to 4 words max). Do not write full sentences. Do not include commentary. Be extremely brief. CRITICAL: Inject realistic, age-appropriate spelling and grammar mistakes, particularly for students with lower target grades, SEN, or EAL status."
-                        answers = fetch_ai_answers(teacher_question, df, instructions, uploaded_file, cohort, subject, teacher_name, is_written=True)
+                        instructions = (
+                            "Write ONLY the absolute minimum factual or mathematical "
+                            "answer the pupil would put on a whiteboard (1 to 4 words). "
+                            "Do not write sentences or commentary. Use spelling variation "
+                            "only when the individual profile contains relevant literacy "
+                            "evidence; never infer it from SEND or EAL status alone."
+                        )
+                        answers = fetch_ai_answers(
+                            teacher_question,
+                            df,
+                            instructions,
+                            uploaded_file,
+                            cohort,
+                            subject,
+                            teacher_name,
+                            is_written=True,
+                            batch_size=WHITEBOARD_BATCH_SIZE,
+                            validate_calibration=True,
+                        )
                         
                     if answers:
                         reveal_text = st.empty()
