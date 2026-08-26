@@ -356,6 +356,10 @@ elif page == "Academic AfL":
     from modules.academic_responses import render_academic_responses
     render_academic_responses(filtered_df, cohort, selected_subject)
 
+elif page == "Questioning Misconceptions":
+    from modules.questioning_module import render_questioning_for_misconceptions
+    render_questioning_for_misconceptions()
+
 elif page == "Lesson Stress-Tester":
     st.title("Lesson stress-tester")
     st.caption(

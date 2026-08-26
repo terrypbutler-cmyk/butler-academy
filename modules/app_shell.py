@@ -17,6 +17,7 @@ NAV_ITEMS = [
     "Seating Plan",
     "Simulator",
     "Academic AfL",
+    "Questioning Misconceptions",
     "Lesson Stress-Tester",
     "Sequence Evaluator",
     "Observe Learning",
@@ -32,6 +33,7 @@ NAV_LABELS = {
     "Seating Plan": "▦  Seating plan",
     "Simulator": "◉  Student roleplay",
     "Academic AfL": "✓  Academic AfL",
+    "Questioning Misconceptions": "?  Question misconceptions",
     "Lesson Stress-Tester": "⚡  Lesson stress-test",
     "Sequence Evaluator": "⇥  Sequence evaluator",
     "Observe Learning": "◎  Observe learning",
@@ -406,7 +408,7 @@ def render_home(
     metric_columns = st.columns(4)
     metric_columns[0].metric("Year 7", f"{len(cohorts['Year 7'])} students")
     metric_columns[1].metric("Year 10", f"{len(cohorts['Year 10'])} students")
-    metric_columns[2].metric("Practice tools", "6 modes")
+    metric_columns[2].metric("Practice tools", "7 modes")
     metric_columns[3].metric("Classroom views", "4 views")
 
     for cohort, message in load_errors.items():
@@ -435,7 +437,7 @@ def render_home(
             "Practise and notice",
             "Rehearse interactions and observation using profile-informed predicted "
             "responses, including misconceptions and non-attempts.",
-            "Simulator · Academic AfL · Observe Learning",
+            "Simulator · Academic AfL · Question Misconceptions · Observe Learning",
         ),
     ]
     for column, (kicker, title, description, tools) in zip(workflow_columns, workflows):
