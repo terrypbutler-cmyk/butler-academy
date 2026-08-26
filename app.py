@@ -357,8 +357,16 @@ elif page == "Academic AfL":
     render_academic_responses(filtered_df, cohort, selected_subject)
 
 elif page == "Questioning Misconceptions":
+    cohort = st.radio("Select Class:", ["Year 7", "Year 10"], horizontal=True)
+    df_base = get_cohort_data(cohort)
+    st.sidebar.subheader(f"Class setup · {cohort}")
+    filtered_df = render_class_filter(
+        df_base,
+        cohort,
+        key_prefix="misconception",
+    )
     from modules.questioning_module import render_questioning_for_misconceptions
-    render_questioning_for_misconceptions()
+    render_questioning_for_misconceptions(filtered_df, cohort)
 
 elif page == "Lesson Stress-Tester":
     st.title("Lesson stress-tester")

@@ -10,6 +10,7 @@ high-leverage teaching moves with a virtual cohort.
 - Seating planning with pupil-context indicators
 - Stateful virtual pupil-reaction roleplay with replay
 - Academic AfL rehearsal
+- Profile-linked misconception questioning with multi-turn pupil dialogue and voice
 - Lesson stress-testing
 - Sequence-of-learning evaluation
 - Simulated circulation and learning observation
