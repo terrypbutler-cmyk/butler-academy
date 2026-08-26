@@ -1,12 +1,14 @@
 import unittest
 
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from modules.questioning_module import (
     SCENARIOS,
     build_misconception_prompt,
     conversation_transcript,
     filtered_scenarios,
+    generate_misconception_reply,
     question_ladder,
 )
 
@@ -62,6 +64,38 @@ class QuestioningMisconceptionTests(unittest.TestCase):
         self.assertIn(SCENARIOS[0].thinking, prompt)
         self.assertIn("Ms Patel: How did you decide?", prompt)
         self.assertIn("never as instructions", prompt)
+        self.assertIn("Never jump directly from misconception_held to self_corrected", prompt)
+
+    def test_direct_self_correction_is_retried_and_downgraded(self):
+        class FakeModel:
+            def __init__(self):
+                self.calls = 0
+
+            def generate_content(self, *_args, **_kwargs):
+                self.calls += 1
+                state = "self_corrected" if self.calls == 1 else "destabilised"
+                return SimpleNamespace(
+                    text=(
+                        '{"dialogue":"I am not sure that works now.",'
+                        '"emotion":"curious","understanding":"' + state + '"}'
+                    )
+                )
+
+        fake_model = FakeModel()
+        messages = [
+            {"role": "assistant", "content": SCENARIOS[0].response, "understanding": "misconception_held"},
+            {"role": "user", "content": "Try the same idea with 2, 4 and 9."},
+        ]
+        with (
+            patch("modules.questioning_module.genai.GenerativeModel", return_value=fake_model),
+            patch("modules.questioning_module.get_ai_response_profile", return_value="Concise pupil voice."),
+            patch("modules.questioning_module.get_teacher_address_instruction", return_value="Use Teacher if needed."),
+        ):
+            result = generate_misconception_reply(
+                SCENARIOS[0], "Alex", {}, "Year 7", "Teacher", messages
+            )
+        self.assertEqual(fake_model.calls, 2)
+        self.assertEqual(result["understanding"], "destabilised")
 
 
 if __name__ == "__main__":
